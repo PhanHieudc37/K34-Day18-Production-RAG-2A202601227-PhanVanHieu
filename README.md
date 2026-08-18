@@ -22,7 +22,7 @@ Xem **ASSIGNMENT.md** để biết chi tiết từng module và timeline.
 |-----------|-----------|----------|
 | Docker (Qdrant) | ✅ Có | M2 Dense Search |
 | Python 3.11+ | ✅ Có | Tất cả modules (RAGAS cần 3.11+ cho asyncio) |
-| `OPENAI_API_KEY` | ⚠️ M4+M5 | RAGAS eval (M4), Enrichment LLM (M5) |
+| `OPENAI_API_KEY` hoặc `GEMINI_API_KEY` | ⚠️ M4+M5 | RAGAS eval (M4), Enrichment LLM (M5). OpenAI là cấu hình mặc định của lab. |
 
 **Pre-download models** (tránh timeout trong lab):
 ```bash
@@ -40,6 +40,11 @@ pip install -r requirements.txt
 cp .env.example .env                    # Điền API keys
 python naive_baseline.py                # ⚠️ Chạy TRƯỚC để có baseline
 ```
+
+Trong `.env`, dùng `LLM_PROVIDER=openai` với `OPENAI_API_KEY`, hoặc
+`LLM_PROVIDER=gemini` với `GEMINI_API_KEY`. Không commit `.env` và không dán key
+vào source/report. Gemini được gọi qua endpoint tương thích OpenAI; RAGAS vẫn
+nhận explicit chat model và embedding model từ cấu hình.
 
 ## Chạy toàn bộ
 

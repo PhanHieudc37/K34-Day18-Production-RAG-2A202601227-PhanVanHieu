@@ -1,91 +1,77 @@
 # Failure Analysis — Lab 18: Production RAG
 
-**Hình thức:** Cá nhân
 **Sinh viên:** Phan Văn Hiếu
+
 **Ngày chạy:** 18/08/2026
 
-## Phạm vi đánh giá
+**Evaluator:** RAGAS, Gemini 3.1 Flash Lite, 20 câu hỏi
 
-Lần chạy nộp bài không có `OPENAI_API_KEY`, đồng thời hai model BGE chưa có trong cache. Pipeline đã chạy end-to-end bằng hashing dense fallback, lexical reranker fallback và RAGAS zero-score fallback. Do đó, các giá trị `0.0000` dưới đây có nghĩa là **chưa đo được bằng RAGAS**, không phải chất lượng thực bằng 0.
+## Kết quả tổng hợp
 
-Để không tạo số liệu giả, bottom-5 được chọn bằng diagnostic pass trên chính 20 câu test: so sánh ground truth với top-3 context, kiểm tra nguồn/version và đọc top-1 answer fallback. Điểm overlap chỉ dùng để sắp ca cần đọc trước, không được báo cáo như RAGAS.
+| Metric | Naive | Production | Δ |
+|---|---:|---:|---:|
+| Faithfulness | 0.3875 | **0.9250** | **+0.5375** |
+| Answer Relevancy | 0.5435 | **0.8835** | **+0.3401** |
+| Context Precision | 0.5250 | **0.7750** | **+0.2500** |
+| Context Recall | 0.5750 | **0.9250** | **+0.3500** |
 
-## RAGAS Scores
+Production đạt cả bốn metric trên 0.75 và faithfulness trên 0.85. Thay đổi có ảnh hưởng lớn nhất là trả parent đầy đủ sau khi retrieve/rerank child. Trước sửa, bảng mua sắm bị cắt ngay trước ô “CEO” và câu PVI bị cắt sau từ “chưa”; sau sửa, context recall tăng từ 0.6917 lên 0.9250.
 
-| Metric | Naive Baseline | Production | Δ | Trạng thái |
-|---|---:|---:|---:|---|
-| Faithfulness | 0.0000 | 0.0000 | +0.0000 | Không có API key |
-| Answer Relevancy | 0.0000 | 0.0000 | +0.0000 | Không có API key |
-| Context Precision | 0.0000 | 0.0000 | +0.0000 | Không có API key |
-| Context Recall | 0.0000 | 0.0000 | +0.0000 | Không có API key |
+## Bottom-5 theo Error Tree
 
-## Bottom-5 Failures
+### 1. Senior 9 năm: phép và lương — average 0.3750
 
-### #1 — Mua laptop 30 triệu
+- **Expected:** 18 ngày phép; lương Senior 20–35 triệu/tháng.
+- **Actual:** Trả đúng 18 ngày nhưng không tìm thấy bảng lương.
+- **Worst metric:** Answer Relevancy = 0.0.
+- **Error Tree:** Answer chưa đủ → context không có bằng chứng lương → retriever dành cả top-3 cho policy nghỉ phép → lỗi coverage ở M2/M3.
+- **Diagnosis:** Query có hai intent thuộc hai tài liệu; top-k chung không bảo đảm mỗi intent có một nguồn.
+- **Suggested fix:** Tách query thành “phép theo thâm niên” và “lương Senior”, RRF hai tập rồi rerank; test context phải chứa cả `nghi_phep_nam_v2024.md` và `bang_luong_2024.md`.
 
-- **Question:** Nếu cần mua một chiếc laptop 30 triệu cho nhân viên mới, ai phê duyệt và cần gì từ phòng CNTT?
-- **Expected:** Director phê duyệt; cần xác nhận cấu hình từ CNTT và ít nhất 3 báo giá.
-- **Got:** Top answer nói về điều kiện tài trợ đào tạo. Top-3 nguồn là `hoan_chi_dao_tao.md`, `dao_tao_noi_bo.md`, `thu_viec.md`.
-- **Worst metric proxy:** Context Recall/Precision.
-- **Error Tree:** Output sai → context không có bằng chứng mua sắm → query hợp lệ → retrieval xếp nhầm các chunk cùng chứa “30 triệu”, “nhân viên”, “phê duyệt”.
-- **Root cause:** BM25/hashing dense ưu tiên overlap bề mặt; không có semantic BGE/reranker thật và chưa có query decomposition cho câu hỏi nhiều điều kiện.
-- **Suggested fix:** Tách query thành `laptop 30 triệu phê duyệt`, `thiết bị CNTT xác nhận cấu hình`, `trên 10 triệu báo giá`; fusion theo sub-query và thêm regression test yêu cầu top-3 chứa `mua_sam.md`.
+### 2. Tạm ứng 15 triệu quá hạn 5 ngày — average 0.6614
 
-### #2 — Senior 9 năm: phép và lương
+- **Expected/Actual:** Đều kết luận xấp xỉ 50.000 VNĐ.
+- **Worst metric:** Faithfulness = 0.2.
+- **Error Tree:** Answer đúng ground truth → context có 2%/tháng nhưng không nói rõ quy ước 30 ngày/pro-rata → generation thêm giả định tính toán.
+- **Diagnosis:** Câu trả lời chưa gắn nhãn giả định.
+- **Suggested fix:** Trả “xấp xỉ 50.000 VNĐ nếu quy ước tháng 30 ngày”; test không trình bày giả định như điều khoản policy.
 
-- **Question:** Một nhân viên Senior có 9 năm thâm niên được nghỉ bao nhiêu ngày phép năm và lương trong khoảng nào?
-- **Expected:** 18 ngày phép theo v2024 và lương Senior 20–35 triệu/tháng.
-- **Got:** Top-1 là `nghi_phep_khong_luong.md`; top-2 có `nghi_phep_nam_v2024.md`, nhưng top-3 không có `bang_luong_2024.md`.
-- **Worst metric proxy:** Context Recall.
-- **Error Tree:** Output sai → context chỉ đủ một nửa câu hỏi → query gồm hai intent → retriever không bảo đảm coverage theo intent.
-- **Root cause:** Một lượt top-k chung làm tài liệu nghỉ phép chiếm nhiều slot, còn bảng lương bị loại trước rerank.
-- **Suggested fix:** Query decomposition thành hai nhánh “phép theo thâm niên” và “lương Senior”, lấy top-k mỗi nhánh rồi RRF; test nguồn cuối phải chứa cả `nghi_phep_nam_v2024.md` và `bang_luong_2024.md`.
+### 3. Thâm niên được cộng phép — average 0.7187
 
-### #3 — Lương thử việc Junior
+- **Expected:** v2024 là 3 năm; v2023 cũ là 5 năm.
+- **Actual:** Đúng policy hiện hành nhưng không nêu policy cũ.
+- **Worst metric:** Context Precision = 0.0.
+- **Error Tree:** Answer chính đúng → context chứa v2024 và v2023 → tài liệu superseded còn trong top-k → lỗi version filtering.
+- **Diagnosis:** `source` được giữ nhưng `status=current|superseded` chưa dùng để filter.
+- **Suggested fix:** Trích version/effective date/status, boost current policy; test v2024 đứng trước v2023.
 
-- **Question:** Lương thử việc của nhân viên Junior mức cao nhất là bao nhiêu?
-- **Expected:** 85% × 20.000.000 = 17.000.000 VNĐ/tháng.
-- **Got:** Top contexts có `thu_viec.md` (85%) và `bang_luong_2024.md` (mức Junior), nhưng fallback answer chỉ trả nguyên top-1 context nên không tính ra kết quả.
-- **Worst metric proxy:** Answer Relevancy.
-- **Error Tree:** Output chưa trả con số → context đủ bằng chứng ở nhiều chunk → retrieval chấp nhận được → generation/fallback không tổng hợp và tính toán.
-- **Root cause:** Khi không có LLM, `run_query()` dùng `contexts[0]` làm answer; đây không phải một bước reasoning đa context.
-- **Suggested fix:** Thêm deterministic calculator cho pattern phần trăm × mức lương hoặc yêu cầu prompt trích số từ mọi context và trình bày phép tính; test expected exact `17.000.000`.
+### 4. Chu kỳ đổi mật khẩu — average 0.7193
 
-### #4 — Thử việc có PVI không
+- **Expected/Actual:** Đúng 120 ngày theo v2.0.
+- **Worst metric:** Context Precision = 0.0.
+- **Error Tree:** Answer đúng → context có v2 hiện hành và v1 cũ → một context không cần thiết → lỗi precision/version filtering.
+- **Diagnosis:** Reranker chưa phạt mạnh metadata “ĐÃ THAY THẾ”.
+- **Suggested fix:** Filter superseded khi đã có current policy; test top context chỉ chứa v2 nếu câu hỏi không yêu cầu lịch sử.
 
-- **Question:** Nhân viên thử việc có được hưởng bảo hiểm sức khỏe PVI không?
-- **Expected:** Không; chỉ tham gia bảo hiểm xã hội bắt buộc.
-- **Got:** Top context bắt đầu bằng “được hưởng gói bảo hiểm sức khỏe PVI”, làm mất phần phủ định trước đó và có nguy cơ đảo ngược câu trả lời.
-- **Worst metric proxy:** Faithfulness/Context Recall.
-- **Error Tree:** Output có thể trái ground truth → context đã mất từ “chưa/không” → retrieval tìm đúng nguồn `thu_viec.md` → lỗi nằm ở child boundary M1.
-- **Root cause:** Child được cắt theo giới hạn ký tự/whitespace, có thể tách giữa chủ ngữ + phủ định và vị ngữ.
-- **Suggested fix:** Child splitter ưu tiên biên câu; nếu phải hard-split thì thêm overlap một câu hoặc 30–50 ký tự. Thêm unit test khẳng định cụm “chưa được hưởng gói bảo hiểm sức khỏe PVI” nằm trọn trong ít nhất một child.
+### 5. Phân loại thông tin lương — average 0.7251
 
-### #5 — Phép năm hiện hành
+- **Expected:** Bí mật, cấp 3, mã hóa và need-to-know.
+- **Actual:** Đúng cấp 3 nhưng thiếu quy tắc xử lý.
+- **Worst metric:** Context Precision = 0.0.
+- **Error Tree:** Answer đúng nhưng thiếu ý → hai parent có bằng chứng → generation chưa tổng hợp đủ hai nguồn.
+- **Diagnosis:** Prompt ưu tiên câu trả lời quá ngắn.
+- **Suggested fix:** Trả schema `cấp độ + nhãn + quy tắc xử lý`; test yêu cầu cả “mã hóa” và “need-to-know”.
 
-- **Question:** Nhân viên được nghỉ bao nhiêu ngày phép năm?
-- **Expected:** Chính sách v2024: 15 ngày; v2023 12 ngày đã bị thay thế.
-- **Got:** Top-1 là `nghi_phep_khong_luong.md`, top-2 là nghỉ đặc biệt, top-3 là `nghi_phep_nam_v2023.md`; `nghi_phep_nam_v2024.md` không vào top-3.
-- **Worst metric proxy:** Context Precision/Recall.
-- **Error Tree:** Output sai phiên bản → context chứa policy cũ và policy khác loại → query hợp lệ → retrieval/rerank chưa dùng metadata hiệu lực.
-- **Root cause:** Metadata hiện giữ được `source`, nhưng chưa chuẩn hóa `version`, `effective_date`, `status=current|superseded` để filter/boost.
-- **Suggested fix:** Trích version/effective date ở M5, filter `status=current` trước RRF hoặc boost tài liệu mới; regression test yêu cầu v2024 đứng trên v2023 và nghỉ không lương.
+## Case study: child → parent
 
-## Case Study — Phép năm v2024/v2023
+1. M2 tìm child nhỏ để có độ chính xác cao.
+2. Phiên bản cũ trả child 256 ký tự, làm vỡ bảng/câu phủ định dù còn `parent_id`.
+3. Phiên bản cuối giữ `parent_text`, loại child trùng parent trước rerank và trả parent sau rerank.
+4. Trước → sau: faithfulness 0.9000 → 0.9250; relevancy 0.7582 → 0.8835; precision 0.6917 → 0.7750; recall 0.6917 → 0.9250.
 
-**Question chọn phân tích:** Nhân viên được nghỉ bao nhiêu ngày phép năm?
+## Ưu tiên vòng tiếp theo
 
-**Error Tree walkthrough:**
-
-1. **Output đúng?** Không; top-1 nói về nghỉ không lương.
-2. **Context đúng?** Không đủ; v2024 vắng mặt, v2023 xuất hiện ở hạng 3.
-3. **Query rewrite đúng?** Query rõ, nhưng chưa bổ sung intent “chính sách hiện hành”.
-4. **Fix ở bước:** M5 chuẩn hóa version/status → M2 filter/boost current policy → M3 rerank với source/version trong pair.
-5. **Cách kiểm tra lại:** Test query phải đưa `nghi_phep_nam_v2024.md` lên hạng 1 và không dùng số 12 làm answer.
-
-## Nếu có thêm 1 giờ
-
-1. Sửa hierarchical child splitter theo biên câu + overlap để không làm rơi phủ định.
-2. Thêm metadata `version`, `effective_date`, `status` và current-policy filter.
-3. Thêm query decomposition cho câu hỏi cần tổng hợp nhiều tài liệu.
-4. Tải model BGE và chạy lại RAGAS bằng API key cá nhân để thay toàn bộ zero fallback bằng số đo thật.
+1. Query decomposition cho câu hỏi đa-hop.
+2. Metadata version/status và filter policy cũ.
+3. Section-level parent/compression để giảm context thừa nhưng giữ nguyên bảng và ngoại lệ.
+4. Regression tests cho phủ định, bảng Markdown, multi-document và version conflict.

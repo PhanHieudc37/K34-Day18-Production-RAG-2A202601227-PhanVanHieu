@@ -11,6 +11,7 @@
 - **M3 — Reranking:** implement `CrossEncoderReranker` bằng `sentence_transformers.CrossEncoder`, sort score giảm dần, giữ original score/metadata/rank và có fallback offline.
 - **M4 — Evaluation:** implement RAGAS bốn metric, chuyển row thành `EvalResult`, zero fallback không crash và Diagnostic Tree cho bottom failures.
 - **M5 — Enrichment:** implement summary, HyQA, contextual prepend, metadata extraction và combined one-call mode; metadata gốc có precedence để không mất source/version.
+- **Production handoff:** retrieve/rerank child nhưng trả `parent_text`, đồng thời deduplicate theo `parent_id`; fix này đưa RAGAS production lên **0.9250 / 0.8835 / 0.7750 / 0.9250**.
 - Sửa `main.py` dùng `os.replace()` để report cũ được ghi đè an toàn trên Windows.
 - Kết quả kiểm thử: **37/37 tests pass**; không còn TODO trong M1–M5.
 
@@ -32,7 +33,7 @@
 ## 3. Kiến thức học được
 
 - **Khái niệm mới nhất:** RRF giải quyết vấn đề hợp nhất hai ranking mà không cần hiệu chỉnh score giữa lexical và vector search.
-- **Điều bất ngờ nhất:** Một child chunk bắt đầu ở “được hưởng PVI” nhưng làm rơi từ “chưa” có thể đảo nghĩa hoàn toàn dù source retrieval đúng.
+- **Điều bất ngờ nhất:** Một child chunk bắt đầu ở “được hưởng PVI” nhưng làm rơi từ “chưa” có thể đảo nghĩa hoàn toàn dù source retrieval đúng. Giữ `parent_id` thôi chưa đủ; runtime phải thực sự resolve child về parent trước generation.
 - **Kết nối với bài giảng:** Chất lượng RAG là chuỗi contract. Model generation không thể sửa context đã mất phủ định, sai version hoặc thiếu một nửa bằng chứng multi-hop.
 - **Version awareness:** Lưu `source` là cần nhưng chưa đủ; production cần `effective_date`, `version`, `status=current|superseded` và filter rõ ràng.
 
@@ -42,7 +43,10 @@
 - `pip` gặp resolver cũ, timeout và file wheel bị khóa; nâng pip rồi dùng cache/download của `uv`.
 - Docker registry TLS timeout; dùng image Qdrant 1.18.3 đã có local và xác nhận HTTP port 6333.
 - PowerShell cp1252 làm lỗi emoji/tiếng Việt; chạy Python với `PYTHONUTF8=1` và `PYTHONIOENCODING=utf-8`.
-- BGE-M3 và reranker chưa có cache; thêm fallback deterministic, chạy model hub offline và ghi rõ giới hạn benchmark.
+- BGE-M3 và reranker ban đầu chưa có cache; thêm fallback deterministic, sau đó tải đủ hai model và xác minh offline. BGE-M3 encode đúng vector 1024 chiều; reranker cold 8.76 giây, warm khoảng 1.01 giây/5 documents trên CPU.
+- OpenAI key xác thực nhưng completion trả chính xác `429 insufficient_quota`. Tôi thêm provider Gemini qua OpenAI-compatible endpoint. Lần đầu chạy Gemini gặp `429 RESOURCE_EXHAUSTED`: giới hạn 15 RPM và 500 request/ngày/model. Cách xử lý là dùng limiter 12 RPM, tách model generation (`gemini-3.5-flash-lite`) khỏi model eval (`gemini-3.1-flash-lite`), cache dataset trước RAGAS và chỉ rerun M4 khi cần.
+- RAGAS Gemini không hỗ trợ `n > 1`; `answer_relevancy` mặc định strictness 3 tạo lỗi. Tôi đặt strictness 1 cho Gemini và xác minh lại đủ 20 câu, không dùng zero fallback.
+- Diagnostic thật phát hiện hierarchical pipeline chỉ trả child 256 ký tự. Tôi giữ `parent_text` trong metadata, deduplicate candidate theo parent và trả parent sau rerank; recall tăng từ 0.6917 lên 0.9250.
 - `main.py` thất bại ở lần chạy lặp lại vì `os.rename()` không overwrite trên Windows; đổi sang `os.replace()`.
 - **Thời gian debug:** Không đo riêng từng lỗi; phần lớn thời gian nằm ở mạng/model cache và kiểm tra end-to-end trên Windows.
 
@@ -56,17 +60,19 @@
 
 ## 6. Action plan áp dụng vào project
 
-1. Thêm unit test không làm rơi negation ở child boundary.
-2. Thêm version-aware filter và test v2024 đứng trên v2023.
-3. Thêm query decomposition cho câu hỏi cần hai nguồn.
-4. Tải model thật, đo latency cold/warm và chạy lại RAGAS khi có API key cá nhân.
-5. Chỉ cập nhật bảng metric/report sau khi có lần eval thật; không thay fallback bằng số ước lượng.
+Áp dụng trực tiếp vào project trợ lý tra cứu chính sách nhân sự cá nhân theo timeline sau:
+
+1. **Tuần 1:** thêm unit test không làm rơi negation ở child boundary và sửa child split theo sentence boundary + overlap; tiêu chí đạt là toàn bộ test cũ và test negation mới đều pass.
+2. **Tuần 2:** chuẩn hoá metadata `version`, `effective_date`, `status` và thêm version-aware filter; kiểm tra bằng bộ query bắt buộc policy v2024 đứng trên v2023.
+3. **Tuần 3:** thêm query decomposition cho câu hỏi cần hai nguồn và lưu retrieval trace BM25/dense/RRF/rerank; kiểm tra bằng các câu phép + lương trong test set.
+4. **Tuần 4:** đo latency cold/warm, cấu hình rate limit theo quota provider và chạy RAGAS định kỳ từ cached eval dataset. Gate phát hành: ít nhất 3 metric ≥ 0.70, faithfulness ≥ 0.85.
+5. **Cuối tuần 4:** phân tích bottom-5 theo Error Tree, áp dụng một fix cho mỗi nhóm lỗi rồi regression eval. Lần lab này đã vượt gate với cả bốn metric ≥ 0.75 và faithfulness 0.9250.
 
 ## 7. Tự đánh giá
 
 | Tiêu chí | Tự chấm (1–5) | Lý do |
 |---|---:|---|
 | Hiểu bài giảng | 5 | Map được M1–M5 vào failure thực tế và version conflict. |
-| Code quality | 4 | Có type contract, fallback, metadata preservation và test; còn cần model benchmark thật. |
+| Code quality | 5 | Có contract, fallback, metadata preservation, API rate limit, cached eval, 37 tests và RAGAS thật đủ 20 câu. |
 | Teamwork/ownership | 5 | Hoàn thành toàn bộ module trong bài cá nhân và ghi rõ giới hạn. |
 | Problem solving | 5 | Xử lý môi trường, network, Docker, encoding, model fallback và Windows report move. |

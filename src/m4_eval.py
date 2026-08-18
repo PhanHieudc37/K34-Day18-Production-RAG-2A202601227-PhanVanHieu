@@ -9,7 +9,12 @@ import sys
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OPENAI_API_KEY, TEST_SET_PATH
+from config import RAGAS_MAX_WORKERS, TEST_SET_PATH
+from src.llm_provider import (
+    create_ragas_models,
+    get_llm_settings,
+    has_llm_credentials,
+)
 
 
 METRIC_NAMES = (
@@ -64,11 +69,12 @@ def evaluate_ragas(
             raise ValueError("questions, answers, contexts and ground_truths must be parallel")
         if not questions:
             return _empty_evaluation()
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        if not has_llm_credentials():
+            raise RuntimeError("No OpenAI or Gemini API key is configured")
 
         from datasets import Dataset
         from ragas import evaluate
+        from ragas.run_config import RunConfig
         from ragas.metrics import (
             answer_relevancy,
             context_precision,
@@ -82,6 +88,15 @@ def evaluate_ragas(
             "contexts": contexts,
             "ground_truth": ground_truths,
         })
+        ragas_llm, ragas_embeddings = create_ragas_models()
+        settings = get_llm_settings()
+        if settings and settings.provider == "gemini":
+            # Gemini's OpenAI-compatible endpoint does not support n > 1.
+            # RAGAS defaults to strictness=3 (three generated candidates), so
+            # use one candidate instead of silently producing a zero metric.
+            answer_relevancy.strictness = 1
+        default_workers = 1 if settings and settings.provider == "gemini" else 4
+        max_workers = RAGAS_MAX_WORKERS if RAGAS_MAX_WORKERS > 0 else default_workers
         result = evaluate(
             dataset,
             metrics=[
@@ -90,6 +105,14 @@ def evaluate_ragas(
                 context_precision,
                 context_recall,
             ],
+            llm=ragas_llm,
+            embeddings=ragas_embeddings,
+            run_config=RunConfig(
+                timeout=180,
+                max_retries=5,
+                max_wait=30,
+                max_workers=max_workers,
+            ),
         )
         dataframe = result.to_pandas()
         per_question = []

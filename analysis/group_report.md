@@ -1,51 +1,62 @@
 # Group Report — Lab 18: Production RAG
 
-**Nhóm:** Bài làm cá nhân — Phan Văn Hiếu
+**Hình thức:** Bài làm cá nhân
+
+**Sinh viên:** Phan Văn Hiếu
+
 **Ngày:** 18/08/2026
 
-## Thành viên & Phân công
+## Phân công và kiểm thử
 
-| Tên | Module | Hoàn thành | Tests pass |
+| Người thực hiện | Module | Trạng thái | Tests |
 |---|---|:---:|---:|
-| Phan Văn Hiếu | M1: Chunking | ✅ | 13/13 |
-| Phan Văn Hiếu | M2: Hybrid Search | ✅ | 5/5 |
-| Phan Văn Hiếu | M3: Reranking | ✅ | 5/5 |
-| Phan Văn Hiếu | M4: Evaluation | ✅ | 4/4 |
-| Phan Văn Hiếu | M5: Enrichment | ✅ | 10/10 |
+| Phan Văn Hiếu | M1 Chunking | ✅ | 13/13 |
+| Phan Văn Hiếu | M2 Hybrid Search | ✅ | 5/5 |
+| Phan Văn Hiếu | M3 Reranking | ✅ | 5/5 |
+| Phan Văn Hiếu | M4 RAGAS + Failure Analysis | ✅ | 4/4 |
+| Phan Văn Hiếu | M5 Enrichment | ✅ | 10/10 |
 | **Tổng** | **M1–M5** | **✅** | **37/37** |
 
-## Kết quả chạy end-to-end
+## End-to-end
 
-- Python: 3.11.15.
-- Corpus: 26 tài liệu đọc được; 2 PDF scan bị bỏ qua đúng boundary vì không có text layer.
-- Production chunking: 117 hierarchical child chunks.
-- Qdrant: chạy local tại port 6333/6334.
-- `python main.py`: exit code 0 sau khi sửa bước di chuyển report trên Windows từ `os.rename` sang `os.replace`.
-- Hai report đã được tạo trong `reports/`.
+- Python 3.11.15; Qdrant local tại port 6333.
+- 26 tài liệu có text; 2 PDF scan được cảnh báo và bỏ qua đúng boundary chưa OCR.
+- M1 tạo 117 hierarchical child chunks, mỗi child liên kết stable `parent_id`.
+- M5 combined mode: một API call/chunk, fallback local và original metadata thắng khi merge.
+- M2 BM25 tiếng Việt + BGE-M3/Qdrant + RRF; payload giữ text/source/parent.
+- M3 dùng `BAAI/bge-reranker-v2-m3`, top-3 giảm dần, giữ original score/metadata/rank.
+- Runtime cuối retrieve/rerank child nhưng trả parent đầy đủ và deduplicate parent để tăng source coverage.
+- `python main.py` đã exit 0 và sinh đủ hai report; model cache được xác minh offline.
 
-## Kết quả RAGAS
+## RAGAS thật trên 20 câu
 
-| Metric | Naive | Production | Δ | Diễn giải |
+| Metric | Naive | Production | Δ | Rubric |
 |---|---:|---:|---:|---|
-| Faithfulness | 0.0000 | 0.0000 | +0.0000 | Fallback, chưa đo |
-| Answer Relevancy | 0.0000 | 0.0000 | +0.0000 | Fallback, chưa đo |
-| Context Precision | 0.0000 | 0.0000 | +0.0000 | Fallback, chưa đo |
-| Context Recall | 0.0000 | 0.0000 | +0.0000 | Fallback, chưa đo |
+| Faithfulness | 0.3875 | **0.9250** | +0.5375 | bonus ≥ 0.85 |
+| Answer Relevancy | 0.5435 | **0.8835** | +0.3401 | đạt ≥ 0.75 |
+| Context Precision | 0.5250 | **0.7750** | +0.2500 | đạt ≥ 0.75 |
+| Context Recall | 0.5750 | **0.9250** | +0.3500 | đạt ≥ 0.75 |
 
-Không có `OPENAI_API_KEY`, nên M4 chủ động trả đủ bốn metric bằng 0 và `per_question=[]`. Đây là kiểm tra độ bền của pipeline, không phải benchmark so sánh chất lượng. BGE-M3 và bge-reranker-v2-m3 cũng chưa có trong cache; lần chạy nộp dùng hashing dense và lexical reranker fallback. Diagnostic pass thủ công được ghi trong `analysis/failure_analysis.md`.
+Production đạt 4/4 metric ≥ 0.75. Report được tạo bằng Gemini thật, không dùng fallback hoặc số ước lượng.
 
-## Key Findings
+## Findings
 
-1. **Biggest improvement:** Pipeline đã có control point rõ ở cả năm module: chunk có parent/source, hybrid giữ metadata, rerank bảo toàn original score, evaluation không crash, enrichment combined chỉ thử một API call/chunk.
-2. **Biggest challenge:** Môi trường không có model BGE/API key và kết nối tải model không ổn định. Fallback giúp chạy end-to-end nhưng không thay thế benchmark production thật.
-3. **Surprise finding:** Giữ đúng nguồn vẫn chưa đủ để xử lý policy cũ/mới. Cần metadata có nghĩa (`version`, `effective_date`, `status`) và quy tắc filter/boost trước RRF.
-4. **Failure quan trọng nhất:** Character-based child split có thể làm rơi từ phủ định “chưa”, khiến context đúng nguồn nhưng sai nghĩa. Đây là lỗi M1 có thể gây hậu quả lớn hơn việc retrieval thiếu một chunk.
-5. **Câu hỏi đa-hop:** Các câu hỏi kết hợp phép + lương hoặc phần trăm + bảng lương cần coverage từ nhiều nguồn và một bước tổng hợp; top-1 context fallback không đủ.
+1. **Biggest win:** child→parent làm recall tăng 0.2333 so với production trước sửa và khôi phục ô bảng/câu phủ định bị cắt.
+2. **Hybrid có ý nghĩa:** BM25 mạnh với số/mã; dense nối paraphrase; RRF hợp nhất theo rank thay vì trộn score.
+3. **Version là control point:** production tiếp theo nên chuẩn hóa `version`, `effective_date`, `status` để filter policy superseded.
+4. **Multi-hop còn khó:** câu Senior + phép + lương cần hai tài liệu; query decomposition là fix tiếp theo.
+5. **Độ bền API:** generation và RAGAS dùng model Gemini riêng, limiter 12 RPM; thiếu key/quota vẫn fallback an toàn.
 
-## Presentation Notes
+## Bonus evidence
 
-1. **RAGAS:** 0/0 vì fallback thiếu key; không tuyên bố production tốt hơn baseline khi chưa có metric thật.
-2. **Biggest win:** Metadata được giữ xuyên M1 → M2 → M3 → M5, giúp diagnostic xác định chính xác source/version bị xếp sai.
-3. **Case study:** “Bao nhiêu ngày phép năm?” lấy nghỉ không lương và policy v2023; fix bằng current-policy metadata filter và version-aware reranking.
-4. **Debug thực tế:** Python 3.10 không đạt yêu cầu; pip/network timeout; Docker registry timeout; PowerShell cp1252; model không cache; `os.rename` không overwrite trên Windows.
-5. **Next optimization:** Sentence-boundary child overlap, version filter, multi-query decomposition, sau đó tải model thật và chạy lại RAGAS.
+- Faithfulness ≥ 0.85: **0.9250** (+3).
+- Tất cả metric ≥ 0.75: thấp nhất **0.7750** (+3).
+- Enrichment combined 1 call/chunk: `_enrich_single_call()` (+2).
+- Latency breakdown đo thật: `analysis/latency_breakdown.md` (+2).
+
+## Demo ngắn
+
+1. Chạy `pytest tests/ -v` và `python check_lab.py`.
+2. So sánh hai JSON trong `reports/`.
+3. Trình bày case bảng mua sắm bị child cắt và fix `parent_text`/`parent_id`.
+4. Mở bottom-5 trong `analysis/failure_analysis.md` và suggested fix có regression test.

@@ -6,10 +6,32 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OPENAI_API_KEY
+from config import GEMINI_ENRICH_RPM
+from src.llm_provider import create_chat_client, get_llm_settings, has_llm_credentials
+
+
+_combined_rate_lock = threading.Lock()
+_last_combined_call_started = 0.0
+
+
+def _wait_for_combined_rate_limit() -> None:
+    """Throttle Gemini combined calls to a free-tier-safe request rate."""
+    global _last_combined_call_started
+    settings = get_llm_settings()
+    if not settings or settings.provider != "gemini" or GEMINI_ENRICH_RPM <= 0:
+        return
+
+    minimum_interval = 60.0 / GEMINI_ENRICH_RPM
+    with _combined_rate_lock:
+        remaining = minimum_interval - (time.monotonic() - _last_combined_call_started)
+        if remaining > 0:
+            time.sleep(remaining)
+        _last_combined_call_started = time.monotonic()
 
 
 @dataclass
@@ -88,12 +110,11 @@ def _parse_json_object(content: str) -> dict:
 
 def summarize_chunk(text: str) -> str:
     """Return a concise Vietnamese summary, or an extractive local fallback."""
-    if OPENAI_API_KEY:
+    if has_llm_credentials():
         try:
-            from openai import OpenAI
-
-            response = OpenAI().chat.completions.create(
-                model="gpt-4o-mini",
+            client, model = create_chat_client()
+            response = client.chat.completions.create(
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -115,12 +136,11 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
     """Generate questions that the chunk can answer."""
     if n_questions <= 0:
         return []
-    if OPENAI_API_KEY:
+    if has_llm_credentials():
         try:
-            from openai import OpenAI
-
-            response = OpenAI().chat.completions.create(
-                model="gpt-4o-mini",
+            client, model = create_chat_client()
+            response = client.chat.completions.create(
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -149,12 +169,11 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
 def contextual_prepend(text: str, document_title: str = "") -> str:
     """Prepend a one-line document context while preserving the original text."""
     context = ""
-    if OPENAI_API_KEY:
+    if has_llm_credentials():
         try:
-            from openai import OpenAI
-
-            response = OpenAI().chat.completions.create(
-                model="gpt-4o-mini",
+            client, model = create_chat_client()
+            response = client.chat.completions.create(
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -180,12 +199,11 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
 
 def extract_metadata(text: str) -> dict:
     """Extract topic, entities, category and language metadata."""
-    if OPENAI_API_KEY:
+    if has_llm_credentials():
         try:
-            from openai import OpenAI
-
-            response = OpenAI().chat.completions.create(
-                model="gpt-4o-mini",
+            client, model = create_chat_client()
+            response = client.chat.completions.create(
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -236,14 +254,14 @@ def _normalize_combined(result: dict, text: str, source: str) -> dict:
 
 def _enrich_single_call(text: str, source: str) -> dict:
     """Return summary, questions, context and metadata using at most one API call."""
-    if not OPENAI_API_KEY:
+    if not has_llm_credentials():
         return _fallback_combined(text, source)
 
     try:
-        from openai import OpenAI
-
-        response = OpenAI().chat.completions.create(
-            model="gpt-4o-mini",
+        _wait_for_combined_rate_limit()
+        client, model = create_chat_client()
+        response = client.chat.completions.create(
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -260,7 +278,8 @@ def _enrich_single_call(text: str, source: str) -> dict:
                 },
             ],
             response_format={"type": "json_object"},
-            max_tokens=400,
+            max_tokens=700,
+            temperature=0,
         )
         parsed = _parse_json_object(response.choices[0].message.content or "")
         return _normalize_combined(parsed, text, source)
