@@ -7,6 +7,7 @@ Chạy: python check_lab.py
 
 import json
 import os
+import re
 import sys
 import subprocess
 
@@ -58,17 +59,14 @@ def run_tests() -> tuple[int, int]:
             [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=no", "-q"],
             capture_output=True, text=True, timeout=120,
         )
-        lines = result.stdout.strip().split("\n")
-        summary = lines[-1] if lines else ""
-        # Parse "X passed, Y failed" or "X passed"
-        passed = total = 0
-        for part in summary.split(","):
-            part = part.strip()
-            if "passed" in part:
-                passed = int(part.split()[0])
-                total += passed
-            if "failed" in part:
-                total += int(part.split()[0])
+        # Pytest 8/9 may print a trailing separator after the summary, so parse
+        # the complete output instead of assuming the final line is numeric.
+        output = f"{result.stdout}\n{result.stderr}"
+        passed_matches = re.findall(r"(\d+)\s+passed", output)
+        failed_matches = re.findall(r"(\d+)\s+failed", output)
+        passed = int(passed_matches[-1]) if passed_matches else 0
+        failed = int(failed_matches[-1]) if failed_matches else 0
+        total = passed + failed
         return passed, total
     except Exception as e:
         print(f"  ⚠️  pytest error: {e}")
